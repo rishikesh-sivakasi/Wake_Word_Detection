@@ -1,0 +1,20 @@
+# ROS2 Workspace Folders
+build/
+install/
+log/
+
+# Python Virtual Environments
+.venv/
+env/
+__pycache__/
+
+# Massive ML Datasets
+speech_commands/
+dataset/
+cpp_dataset/
+hey_saya_samples/
+*.tar.gz
+
+# Compiled Binaries
+wake_word_detector
+
