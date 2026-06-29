@@ -17,7 +17,11 @@ public:
     // NEW: Load a 2D matrix of templates
     bool load_templates(const std::string& template_path);
 
-    // NEW: Compare against all templates and average the top_k
+    // NOTE: despite the name/param, this compares ONLY against the 2 rows
+    // loaded by load_templates() (row0=Hey Saya, row1=Noise) using a
+    // margin gate — NOT a top-k average over many templates. `top_k` is
+    // currently unused; kept for a possible future multi-template bank.
+    // See the header comment in wake_word_detector.cpp for the full story.
     float compare_topk(const float* embedding, int top_k) const;
 
     float predict(const float* mfcc_features, int top_k = 3);

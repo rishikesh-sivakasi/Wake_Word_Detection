@@ -7,14 +7,19 @@ log/
 .venv/
 env/
 __pycache__/
+.vscode/
 
 # Massive ML Datasets
 speech_commands/
 dataset/
 cpp_dataset/
 hey_saya_samples/
+noise_samples/
+indian_accent_data/
+noise_esc50_prepared/
 *.tar.gz
 
 # Compiled Binaries
-wake_word_detector
+wake_word_detector/
+svarah_qa_flagged.txt
 

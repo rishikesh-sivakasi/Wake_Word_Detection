@@ -14,7 +14,10 @@ Architecture:
 Key idea:
   Same word spoken by different people  → embeddings are CLOSE
   Different words                        → embeddings are FAR APART
-  This is learned via Triplet Loss during training.
+  This is learned via episodic Prototypical-Network training (see
+  train_embedding.py: prototypical_loss()), NOT the TripletLoss class
+  below — that class is currently unused legacy code, kept in case you
+  want to experiment with triplet-based training later.
 """
 
 import torch
@@ -85,6 +88,12 @@ class WakeWordEmbedder(nn.Module):
 
 class TripletLoss(nn.Module):
     """
+    NOTE: currently unused. train_embedding.py trains with
+    prototypical_loss() (episodic Prototypical Networks), not this class.
+    Kept here as a legacy/optional alternative — delete if you don't plan
+    to use it, to avoid confusing future readers about what's actually
+    driving training.
+
     Triplet Loss — teaches the model that:
       distance(anchor, positive) + margin < distance(anchor, negative)
 

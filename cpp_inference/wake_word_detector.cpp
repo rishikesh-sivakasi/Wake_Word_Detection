@@ -2,29 +2,42 @@
 // wake_word_detector.cpp
 // Real-time Embedding-based Wake Word Detection
 //
-// WHAT CHANGED FROM PREVIOUS VERSION:
+// CURRENT MATCHING STRATEGY (templates.npy holds exactly 2 rows):
+//   Row 0 = "Hey Saya" prototype embedding (mean of registered samples)
+//   Row 1 = "Noise"    prototype embedding (mean of registered samples)
 //
-//   1. LOADS ALL TEMPLATES (templates.npy) not just one template
-//      embedder.load_templates() replaces embedder.load_template()
+//   Every inference window computes a live 128-dim embedding and takes
+//   its cosine similarity (dot product, both sides are L2-normalized)
+//   against BOTH prototypes:
+//     saya_dot  = live . saya_prototype
+//     noise_dot = live . noise_prototype
 //
-//   2. 100ms SLIDING WINDOW STRIDE instead of fixed 400ms chunks
-//      CAPTURE_CHUNK = 1600 samples = 100ms
-//      Every chunk triggers a new inference window
-//      → Much less likely to miss a wake word between windows
+//   A detection candidate must pass BOTH gates (see compare_topk() in
+//   cnn_inference.cpp):
+//     Gate 1: saya_dot  > threshold        (caller-supplied, argv[2])
+//     Gate 2: saya_dot - noise_dot > NOISE_MARGIN
 //
-//   3. TOP-K AVERAGE SIMILARITY instead of single dot product
-//      compare_topk() scores all N templates, returns avg of top-3
-//      → More robust than pure MAX against false positives
+//   NOTE: this is NOT a top-K search over many templates. The "top_k"
+//   parameter threaded through predict()/compare_topk() is currently
+//   unused (kept only so the signature can support a multi-template
+//   bank later, e.g. several speakers' prototypes instead of one).
+//   If you see code or docs elsewhere claiming "top-K average over N
+//   templates", that describes an earlier design this project moved
+//   away from — see register_wake_word.py's docstring for why.
 //
-// UNCHANGED: 2-second audio window, MFCC pipeline, pre-emphasis, AGC
+// SLIDING WINDOW: 100ms stride (CAPTURE_CHUNK = 1600 samples) over a
+//   2-second window, so a new inference happens on every chunk rather
+//   than waiting for a full new window to fill.
 //
 // COMPILE:
 //   g++ -O2 wake_word_detector.cpp cnn_inference.cpp mfcc.cpp \
 //       kissfft/kiss_fft.c -Ikissfft -lasound -o wake_word_detector
 //
 // USAGE:
-//   ./wake_word_detector templates.npy [threshold] [top_k]
-//   e.g.: ./wake_word_detector templates.npy 0.75 3
+//   ./wake_word_detector templates.npy [threshold]
+//   e.g.: ./wake_word_detector templates.npy 0.75
+//   (there is currently no third CLI argument — top_k is not wired up;
+//    see NOTE above)
 //==============================================================================
 
 #include "mfcc.h"
@@ -43,12 +56,12 @@ static const int   HOP_LENGTH    = 160;
 static const int   N_MFCC        = 40;
 static const int   MAX_FRAMES    = 196;
 
-static const float GLOBAL_MEAN   = -1.9461231231689453f;
-static const float GLOBAL_STD    = 12.231356620788574f;
+static const float GLOBAL_MEAN   = -1.9617609977722168f;
+static const float GLOBAL_STD    = 12.306929588317871f;
 
 static const int   CAPTURE_CHUNK  = 1600;  // 100ms Stride
-static const int   TOP_K          = 3;
-static const int   REQUIRED_CONSECUTIVE = 5; // 500ms sustained match
+static const int   TOP_K          = 3;  // NOTE: currently unused by compare_topk() — see file header
+static const int   REQUIRED_CONSECUTIVE = 2; // 200ms sustained match
 static const int   COOLDOWN_CHUNKS      = 20;
 
 // Proper Ring Buffer implementation
@@ -98,7 +111,15 @@ static void apply_agc(float* audio, int len) {
         if (std::abs(audio[i]) > max_val) max_val = std::abs(audio[i]);
     }
     if (max_val > 0.15f) {
-        float gain = std::min(0.80f / max_val, 8.0f);
+        // FIX: clamp gain to [1.0, 8.0], matching the Python AGC used during
+        // training/registration: np.clip(target / mv, 1.0, max_gain).
+        // Without the 1.0 floor, loud audio (max_val between 0.8 and 1.0)
+        // got silently *attenuated* here at inference time, while the
+        // training-time Python version left it untouched in that range.
+        // That mismatch meant some live audio was being fed through a
+        // slightly different transform than anything the model ever saw
+        // in training -> a real (if narrow) train/inference skew.
+        float gain = std::min(std::max(0.80f / max_val, 1.0f), 8.0f);
         for (int i = 0; i < len; i++) {
             audio[i] = std::max(std::min(audio[i] * gain, 1.0f), -1.0f);
         }
@@ -165,6 +186,17 @@ int main(int argc, char** argv) {
         }
 
         ring.read_linear(audio_window.data());
+        float max_amp = 0.0f;
+        for (int i = 0; i < WINDOW_SAMPLES; i++) {
+            if (std::abs(audio_window[i]) > max_amp) max_amp = std::abs(audio_window[i]);
+        }
+        
+        // Skip CNN if someone is just murmuring or room is quiet
+        if (max_amp < 0.03f) {
+            consecutive = 0;
+            continue; 
+        }
+        // ----------------------------
         apply_pre_emphasis(audio_window.data(), WINDOW_SAMPLES);
         apply_agc(audio_window.data(), WINDOW_SAMPLES);
 
@@ -194,8 +226,8 @@ int main(int argc, char** argv) {
         }
 
         // Clean interface: \r overwrites the current line instead of spamming down
-        std::cout << "\rSimilarity: " << (int)(similarity * 100) << "% [" 
-                  << consecutive << "/" << REQUIRED_CONSECUTIVE << "]      " << std::flush;
+        // std::cout << "\rSimilarity: " << (int)(similarity * 100) << "% [" 
+        //           << consecutive << "/" << REQUIRED_CONSECUTIVE << "]      " << std::flush;
 
         if (consecutive >= REQUIRED_CONSECUTIVE) {
             total_detections++;
