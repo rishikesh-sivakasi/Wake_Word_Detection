@@ -1,5 +1,5 @@
 """
-qa_check_svarah.py
+check.py
 ===================
 Scans the word clips produced by prepare_svarah.py for likely alignment
 problems, so you don't have to randomly sample 35,910 files by ear.
@@ -11,7 +11,7 @@ have a subtly wrong boundary. Use it to prioritize what to listen to,
 not as a final correctness check.
 
 RUN:
-    python3 qa_check_svarah.py --root ./indian_accent_data/svarah_english
+    python3 check.py --root ./indian_accent_data/svarah_english
 """
 
 import os

@@ -23,3 +23,6 @@ noise_esc50_prepared/
 wake_word_detector/
 svarah_qa_flagged.txt
 
+python_training_&_feature_extraction/preprocessing_scripts/remove.py
+python_training_&_feature_extraction/preprocessing_scripts/move.py
+
