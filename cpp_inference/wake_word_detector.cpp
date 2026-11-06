@@ -56,8 +56,9 @@ static const int   HOP_LENGTH    = 160;
 static const int   N_MFCC        = 40;
 static const int   MAX_FRAMES    = 196;
 
-static const float GLOBAL_MEAN   = -1.9617609977722168f;
-static const float GLOBAL_STD    = 12.306929588317871f;
+
+static const float GLOBAL_MEAN   = -1.9442176818847656f;
+static const float GLOBAL_STD    = 12.191904067993164f;
 
 static const int   CAPTURE_CHUNK  = 1600;  // 100ms Stride
 static const int   TOP_K          = 3;  // NOTE: currently unused by compare_topk() — see file header

@@ -58,8 +58,8 @@ EMBEDDING_DIM  = 128
 # ══════════════════════════════════════════════════════════════════
 # PASTE YOUR VALUES FROM global_stats.txt (output of train_embedding.py)
 # ══════════════════════════════════════════════════════════════════
-GLOBAL_MEAN = -1.9617609977722168
-GLOBAL_STD = 12.306929588317871
+GLOBAL_MEAN = -1.9442176818847656
+GLOBAL_STD = 12.191904067993164
 
 DEVICE = torch.device("cpu")
 

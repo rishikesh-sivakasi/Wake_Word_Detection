@@ -6,7 +6,7 @@
 //   conv2: (16,20,98)  → (32,20,98)  → pool → (32,10,49)
 //   conv3: (32,10,49)  → (64,10,49)  → pool → (64,5,24)
 //
-// COMPARE_TOPK STRATEGY (updated):
+// compare_margin_gate STRATEGY (updated):
 //   Uses a margin-based filter instead of a hard noise_dot > saya_dot cut.
 //
 //   WHY THE CHANGE:
@@ -243,7 +243,7 @@ bool WakeWordEmbedder::load_templates(const std::string& path) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// COMPARE_TOPK — margin-based dual gate
+// compare_margin_gate — margin-based dual gate
 //
 // Gate 1: saya_dot must exceed the threshold passed by the caller
 //         (checked in wake_word_detector.cpp after predict() returns)
@@ -254,7 +254,7 @@ bool WakeWordEmbedder::load_templates(const std::string& path) {
 // Returns saya_dot if both gates pass, otherwise 0.0
 // ════════════════════════════════════════════════════════════════════════════
 
-float WakeWordEmbedder::compare_topk(const float* live_embedding, int /*top_k*/) const {
+float WakeWordEmbedder::compare_margin_gate(const float* live_embedding, int /*top_k*/) const {
     if (template_bank.size() < 2) return 0.0f;
 
     // Dot product = cosine similarity (embeddings are L2-normalized)
@@ -335,7 +335,7 @@ void WakeWordEmbedder::get_embedding(const float* mfcc_features, float* embeddin
 float WakeWordEmbedder::predict(const float* mfcc_features, int top_k) {
     float embedding[EMBEDDING_DIM];
     get_embedding(mfcc_features, embedding);
-    return compare_topk(embedding, top_k);
+    return compare_margin_gate(embedding, top_k);
 }
 
 void  WakeWordEmbedder::set_threshold(float t) { threshold = t; }

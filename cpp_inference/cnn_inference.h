@@ -22,7 +22,7 @@ public:
     // margin gate — NOT a top-k average over many templates. `top_k` is
     // currently unused; kept for a possible future multi-template bank.
     // See the header comment in wake_word_detector.cpp for the full story.
-    float compare_topk(const float* embedding, int top_k) const;
+    float compare_margin_gate(const float* embedding, int top_k) const;
 
     float predict(const float* mfcc_features, int top_k = 3);
 

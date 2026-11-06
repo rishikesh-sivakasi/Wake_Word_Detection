@@ -28,7 +28,7 @@ import random
 # PATHS — matching your project structure exactly
 # ══════════════════════════════════════════════════════════════════
 BASE_DIR   = "/home/arz-1029/pt_task/python_training_&_feature_extraction"
-INPUT_DIR  = os.path.join(BASE_DIR, "hey_saya_samples")        # your 10 real recordings
+INPUT_DIR  = os.path.join(BASE_DIR, "dataset/hey_saya_samples/")        # your 10 real recordings
 OUTPUT_DIR = os.path.join(BASE_DIR, "dataset", "train", "positive")  # augmented output
 
 TARGET_COUNT = 300
@@ -101,7 +101,6 @@ def simulate_distance(audio, factor):
 
 # ══════════════════════════════════════════════════════════════════
 # ALL AUGMENTATION COMBINATIONS
-# 10 originals × 29 augmentations = 290 + 10 originals = 300 total
 # ══════════════════════════════════════════════════════════════════
 def get_augmentations():
     aug = []
@@ -138,8 +137,53 @@ def get_augmentations():
     aug.append(("combo_p2_dist", lambda a: simulate_distance(pitch_shift(a, -2), 0.5)))
     aug.append(("combo_p2_n1",   lambda a: add_gaussian_noise(pitch_shift(a, +2), 0.008)))
 
-    return aug  # 29 total
+    # #Pitch Shift + Time Shift
+    # aug.append(("combo_p2_shift100",  lambda a: time_shift(pitch_shift(a, +2), 100)))
+    # aug.append(("combo_m2_shiftm100", lambda a: time_shift(pitch_shift(a, -2), -100)))
+    
+    # #Pitch Shift + Time Stretch (Speed)
+    # aug.append(("combo_p1_fast",      lambda a: time_stretch(pitch_shift(a, +1), 1.1)))
+    # aug.append(("combo_m1_slow",      lambda a: time_stretch(pitch_shift(a, -1), 0.9)))
+    
+    # #Time Shift + Gaussian Noise
+    # aug.append(("combo_shift50_noise", lambda a: add_gaussian_noise(time_shift(a, 50), 0.01)))
+    
+    # #The "Extreme" Combo (Pitch + Speed + Time Shift + Noise)
+    # aug.append(("combo_extreme_1",    lambda a: add_gaussian_noise(time_shift(time_stretch(pitch_shift(a, +2), 1.15), 80), 0.005)))
 
+    # ==========================================
+    # NEW: MASSIVE COMBINATION GRID (81 samples)
+    # ==========================================
+    # By nesting these loops, we multiply the variations:
+    # 3 pitches × 3 speeds × 3 noise levels × 3 shifts = 81 extreme combos!
+    
+    # pitches = [-2, 0, +2]             # Lower, normal, higher
+    # speeds  = [0.85, 1.0, 1.15]       # Slow, normal, fast
+    # noises  = [0.0, 0.005, 0.015]     # Clean, light noise, heavy noise
+    # shifts  = [-100, 0, +100]         # Early, centered, late
+    
+    # for p in pitches:
+    #     for s in speeds:
+    #         for n in noises:
+    #             for sh in shifts:
+    #                 # Skip the "do nothing" combination because that's just the original file
+    #                 if p == 0 and s == 1.0 and n == 0.0 and sh == 0:
+    #                     continue
+                        
+    #                 name = f"grid_p{p}_s{s}_n{n}_sh{sh}"
+                    
+    #                 # We wrap the lambda to trap the specific variables in the loop
+    #                 def make_combo(audio, p=p, s=s, n=n, sh=sh):
+    #                     temp = audio
+    #                     if p != 0:   temp = pitch_shift(temp, p)
+    #                     if s != 1.0: temp = time_stretch(temp, s)
+    #                     if sh != 0:  temp = time_shift(temp, sh)
+    #                     if n != 0.0: temp = add_gaussian_noise(temp, n)
+    #                     return temp
+                        
+    #                 aug.append((name, make_combo))
+
+    return aug  # Will now return ~108 augmentations per original!
 
 # ══════════════════════════════════════════════════════════════════
 # MAIN

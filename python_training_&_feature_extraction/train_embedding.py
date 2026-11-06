@@ -1,45 +1,7 @@
 """
-train_embedding.py — FINAL VERSION WITH INDIAN ACCENT DATA
-============================================================
-Trains the embedding model using FOUR data sources:
-  1. Google Speech Commands       (general speech separation)
-  2. Indian accent word groups    (Common Voice Hindi + Tamil,
-                                    grouped by word — see prepare_commonvoice.py)
-  3. Your Hey Saya samples        (teaches exact wake word boundary)
-  4. Your negative samples        (teaches what to reject)
-
-Episode mix per training step:
-  35% Hey Saya episodes            — pushes Hey Saya far from everything else
-  35% Indian accent episodes       — teaches "same word, different Indian
-                                      accent" should map to close embeddings
-  30% Speech Commands episodes     — general English speech separation
-
-WHY ADD INDIAN ACCENT EPISODES:
-  Speech Commands alone is English, single-accent (mostly US speakers).
-  Training only on that does not teach the model that a Tamil speaker
-  and a Hindi speaker saying the same word should land close together
-  in embedding space. Indian accent episodes sample word-groups built
-  from Common Voice Hindi/Tamil (via prepare_commonvoice.py) where each
-  group already contains the same word spoken by many different
-  speakers/accents — exactly the signal needed for accent-robust
-  "Hey Saya" detection across Indian speakers.
-
-HOW TO RUN:
-  python3 train_embedding.py --indian_data ./indian_accent_data
-
-BEFORE RUNNING:
-  1. Run augment_wake_word.py first to create 300 positive samples
-  2. Make sure your negative folder has 200+ clips
-  3. Speech Commands downloads automatically if not present
-  4. Run prepare_commonvoice.py first to build ./indian_accent_data
-     (hindi/group_NNN/ and tamil/group_NNN/ folders of WAV clips)
-
-AFTER RUNNING:
-  1. Open global_stats.txt
-  2. Copy GLOBAL_MEAN and GLOBAL_STD into:
-     - register_wake_word.py
-     - wake_word_detector.cpp
-  3. Run: python3 register_wake_word.py
+train_embedding.py
+Trains the wake word embedding model using a 5-source episodic training mix:
+Speech Commands, Indian accents, Hey Saya positives, hard negatives, and ESC-50 noise.
 """
 
 import os
@@ -55,14 +17,11 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 import urllib.request
 import tarfile
+import glob
 
 from embedding_model import WakeWordEmbedder
 
-# ══════════════════════════════════════════════════════════════════
-# PATHS
-# ══════════════════════════════════════════════════════════════════
-# NOTE: Update BASE_DIR to match your actual project root, or run this
-# script from your project root and leave it as "." (current directory).
+# --- PATHS ---
 BASE_DIR = os.environ.get("WAKE_WORD_BASE_DIR", ".")
 
 SPEECH_COMMANDS_DIR = os.path.join(BASE_DIR, "speech_commands")
@@ -71,9 +30,7 @@ HARD_NEGATIVE_DIR   = os.path.join(BASE_DIR, "dataset", "train", "negative")
 MODEL_SAVE          = os.path.join(BASE_DIR, "embedding_model.pth")
 STATS_FILE          = os.path.join(BASE_DIR, "global_stats.txt")
 
-# ══════════════════════════════════════════════════════════════════
-# AUDIO CONFIG
-# ══════════════════════════════════════════════════════════════════
+# --- AUDIO CONFIG ---
 SAMPLE_RATE   = 16000
 N_FFT         = 512
 HOP_LENGTH    = 160
@@ -82,26 +39,24 @@ N_MFCC        = 40
 MAX_FRAMES    = 196
 EMBEDDING_DIM = 128
 
-# ══════════════════════════════════════════════════════════════════
-# TRAINING CONFIG
-# ══════════════════════════════════════════════════════════════════
-N_SHOT             = 10    # support samples per class
-N_QUERY            = 5     # query samples per class per episode
-N_WAY              = 5     # classes per episode
-EPISODES_PER_EPOCH = 200   # reduced from 500 — CPU-only training budget
-VAL_EPISODES       = 60    # reduced from 100 — keeps validation fast
-EPOCHS             = 40    # reduced from 80 — fits a 2-week CPU-only timeline
+# --- TRAINING CONFIG ---
+N_SHOT             = 10
+N_QUERY            = 5
+N_WAY              = 5
+EPISODES_PER_EPOCH = 200
+VAL_EPISODES       = 60
+EPOCHS             = 60
 LR                 = 1e-3
-PATIENCE           = 10    # slightly reduced to match lower EPOCHS
+PATIENCE           = 10
 
-# Episode mix — must sum to 1.0
-HEY_SAYA_EPISODE_RATIO  = 0.35    # forces Hey Saya far from everything else
-INDIAN_EPISODE_RATIO    = 0.35    # teaches accent-invariant word recognition
-# remaining (1 - HEY_SAYA_EPISODE_RATIO - INDIAN_EPISODE_RATIO) = 0.30
-# goes to plain Speech Commands episodes
+# --- EPISODE RATIOS ---
+HEY_SAYA_EPISODE_RATIO  = 0.35
+INDIAN_EPISODE_RATIO    = 0.25
+NOISE_EPISODE_RATIO     = 0.15   
+# Speech Commands receives the remaining 25%
 
-# Minimum clips required in an Indian word-group to use it for an episode
-INDIAN_MIN_GROUP_SIZE = N_SHOT + N_QUERY   # = 15
+INDIAN_MIN_GROUP_SIZE = N_SHOT + N_QUERY   
+ESC50_MIN_GROUP_SIZE  = N_SHOT + N_QUERY   
 
 WORDS_TO_USE = [
     "yes", "no", "up", "down", "left", "right", "on", "off",
@@ -113,9 +68,7 @@ WORDS_TO_USE = [
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {DEVICE}")
 
-# ══════════════════════════════════════════════════════════════════
-# MFCC — exact match to mfcc.cpp + dataset_extractor.cpp
-# ══════════════════════════════════════════════════════════════════
+# --- MFCC FEATURE EXTRACTION ---
 import librosa.filters as lf
 
 _mel = lf.mel(sr=SAMPLE_RATE, n_fft=N_FFT, n_mels=N_MELS, dtype=np.float32)
@@ -128,6 +81,7 @@ _dct     = _dct.astype(np.float32)
 
 
 def pre_emphasis(audio, coeff=0.97):
+    # Apply standard pre-emphasis filter
     out = np.copy(audio)
     for i in range(len(audio) - 1, 0, -1):
         out[i] = audio[i] - coeff * audio[i - 1]
@@ -135,6 +89,7 @@ def pre_emphasis(audio, coeff=0.97):
 
 
 def agc(audio, threshold=0.15, target=0.80, max_gain=8.0):
+    # Automatic Gain Control to normalize volume
     mv = np.max(np.abs(audio))
     if mv > threshold:
         gain  = np.clip(target / mv, 1.0, max_gain)
@@ -143,6 +98,7 @@ def agc(audio, threshold=0.15, target=0.80, max_gain=8.0):
 
 
 def extract_mfcc(audio: np.ndarray) -> np.ndarray:
+    # Extracts exactly the same features as the C++ edge inference
     audio   = pre_emphasis(audio)
     audio   = agc(audio)
     S_power = np.abs(librosa.stft(audio, n_fft=N_FFT, hop_length=HOP_LENGTH,
@@ -150,6 +106,8 @@ def extract_mfcc(audio: np.ndarray) -> np.ndarray:
     mel_S   = _mel @ S_power
     log_mel = np.log(mel_S + 1e-6)
     mfcc    = _dct @ log_mel
+    
+    # Pad or truncate to ensure strict MAX_FRAMES length
     if mfcc.shape[1] < MAX_FRAMES:
         mfcc = np.pad(mfcc, ((0,0),(0, MAX_FRAMES - mfcc.shape[1])), mode='constant')
     else:
@@ -158,6 +116,7 @@ def extract_mfcc(audio: np.ndarray) -> np.ndarray:
 
 
 def load_audio(path):
+    # Load and force audio to exactly 2.0 seconds
     audio, _ = librosa.load(path, sr=SAMPLE_RATE, mono=True)
     target   = SAMPLE_RATE * 2
     if len(audio) < target:
@@ -167,10 +126,9 @@ def load_audio(path):
     return audio
 
 
-# ══════════════════════════════════════════════════════════════════
-# DOWNLOAD SPEECH COMMANDS
-# ══════════════════════════════════════════════════════════════════
+# --- DOWNLOAD SPEECH COMMANDS ---
 def download_speech_commands():
+    # Downloads Google Speech Commands dataset if missing
     url     = "http://download.tensorflow.org/data/speech_commands_v0.02.tar.gz"
     archive = "speech_commands_v0.02.tar.gz"
     if os.path.exists(SPEECH_COMMANDS_DIR):
@@ -188,10 +146,9 @@ def download_speech_commands():
     print("Done.")
 
 
-# ══════════════════════════════════════════════════════════════════
-# LOAD DATASETS
-# ══════════════════════════════════════════════════════════════════
+# --- DATASET LOADERS ---
 def load_wav_files(folder, label):
+    # Helper to load all .wav files from a directory
     if not os.path.exists(folder):
         print(f"WARNING: {label} folder not found: {folder}")
         return []
@@ -205,6 +162,7 @@ def load_wav_files(folder, label):
 
 
 def build_word_file_map():
+    # Maps Speech Commands words to their respective files
     word_files = {}
     for word in WORDS_TO_USE:
         d     = os.path.join(SPEECH_COMMANDS_DIR, word)
@@ -217,25 +175,11 @@ def build_word_file_map():
 
 
 def build_indian_group_map(indian_data_dir):
-    """
-    Loads word-groups produced by prepare_commonvoice.py.
-
-    Expected structure:
-      indian_data_dir/
-        hindi/group_001/clip_0001.wav, clip_0002.wav, ...
-        hindi/group_002/...
-        tamil/group_001/...
-        tamil/group_002/...
-
-    Returns: { 'hindi_group_001': [wav paths], 'tamil_group_001': [...], ... }
-    Groups smaller than INDIAN_MIN_GROUP_SIZE are skipped, since they
-    cannot supply a full N_SHOT + N_QUERY episode on their own.
-    """
+    """Returns dictionary mapping Indian word groups to file paths."""
     indian_groups = {}
 
     if not indian_data_dir or not os.path.exists(indian_data_dir):
-        print(f"  {'Indian accent data':<25}: not found, skipping "
-              f"(pass --indian_data to enable)")
+        print(f"  {'Indian accent data':<25}: not found, skipping ")
         return indian_groups
 
     for lang in sorted(os.listdir(indian_data_dir)):
@@ -252,22 +196,50 @@ def build_indian_group_map(indian_data_dir):
                 key = f"{lang}_{group_name}"
                 indian_groups[key] = files
 
-    print(f"  {'Indian accent data':<25}: {len(indian_groups)} word groups loaded "
-          f"(>= {INDIAN_MIN_GROUP_SIZE} clips each)")
+    print(f"  {'Indian accent data':<25}: {len(indian_groups)} word groups loaded")
     return indian_groups
 
 
-# ══════════════════════════════════════════════════════════════════
-# GLOBAL STATS — computed from ALL data
-# ══════════════════════════════════════════════════════════════════
-def compute_global_stats(word_files, indian_groups, hey_saya_files, neg_files, n_samples=600):
+def build_esc50_group_map(esc50_dir):
+    """Returns dictionary mapping ESC-50 noise categories to file paths."""
+    esc50_groups = {}
+
+    if not esc50_dir or not os.path.exists(esc50_dir):
+        print(f"  {'ESC-50 noise':<25}: not found, skipping ")
+        return esc50_groups
+
+    for category in sorted(os.listdir(esc50_dir)):
+        cat_dir = os.path.join(esc50_dir, category)
+        if not os.path.isdir(cat_dir):
+            continue
+        files = [
+            os.path.join(cat_dir, f)
+            for f in os.listdir(cat_dir)
+            if f.lower().endswith(".wav")
+        ]
+        if len(files) >= ESC50_MIN_GROUP_SIZE:
+            esc50_groups[category] = files
+
+    print(f"  {'ESC-50 noise':<25}: {len(esc50_groups)} categories loaded")
+    if len(esc50_groups) < N_WAY:
+        print(f"  ⚠️  ESC-50 has only {len(esc50_groups)} categories. Noise episodes skipped.")
+
+    return esc50_groups
+
+
+# --- GLOBAL STATS ---
+def compute_global_stats(word_files, indian_groups, hey_saya_files,
+                         neg_files, esc50_groups, n_samples=600):
+    # Calculates mean and std across a random sample of all available datasets
     print("\nComputing GLOBAL_MEAN and GLOBAL_STD...")
 
     all_files  = [f for fs in word_files.values() for f in fs]
     all_files += [f for fs in indian_groups.values() for f in fs]
     all_files += hey_saya_files
     all_files += neg_files
-    sampled    = random.sample(all_files, min(n_samples, len(all_files)))
+    all_files += [f for fs in esc50_groups.values() for f in fs]
+
+    sampled = random.sample(all_files, min(n_samples, len(all_files)))
 
     all_mfccs = []
     for fp in tqdm(sampled, desc="  Sampling"):
@@ -283,78 +255,50 @@ def compute_global_stats(word_files, indian_groups, hey_saya_files, neg_files, n
 
     print(f"\n  GLOBAL_MEAN = {mean:.8f}")
     print(f"  GLOBAL_STD  = {std:.8f}")
-    print(f"\n  ⚠️  Copy these two numbers into:")
-    print(f"     register_wake_word.py  → GLOBAL_MEAN, GLOBAL_STD")
-    print(f"     wake_word_detector.cpp → GLOBAL_MEAN, GLOBAL_STD")
 
     with open(STATS_FILE, "w") as f:
         f.write(f"GLOBAL_MEAN = {mean}\nGLOBAL_STD = {std}\n")
-    print(f"  Saved to: {STATS_FILE}\n")
-
+    
     return mean, std
 
 
-# ══════════════════════════════════════════════════════════════════
-# EPISODIC DATASET
-#
-# Three types of episodes:
-#
-# TYPE 1 — Hey Saya episode (35% of training):
-#   Class 0      = Hey Saya (10 support + 5 query from your 300 samples)
-#   Class 1      = Hard negatives (10 support + 5 query), when available
-#   Class 2..N-1 = Remaining slots filled with random Speech Commands words
-#   This forces: Hey Saya embedding MUST be far from all other sounds,
-#   including specifically your curated ambient/negative recordings —
-#   not just generic words.
-#
-# TYPE 2 — Indian accent episode (35% of training):
-#   Class 0..4 = 5 random Indian word-groups (Hindi/Tamil mixed)
-#   Each group contains the SAME word spoken by many different
-#   speakers/accents. This teaches: same word + different accent
-#   => embeddings should be CLOSE together. This is the key fix for
-#   generalising "Hey Saya" detection across Indian accents.
-#
-# TYPE 3 — Speech Commands episode (30% of training):
-#   Class 0..4 = 5 random Speech Commands words
-#   This teaches: general speech sound separation
-# ══════════════════════════════════════════════════════════════════
+# --- EPISODIC DATASET ---
 class EpisodicDataset(Dataset):
-
+    """
+    Handles episodic batch generation across 4 types: 
+    Hey Saya, Indian Accent, ESC-50 Noise, and Speech Commands.
+    """
     def __init__(self, word_files, indian_groups, hey_saya_files, neg_files,
-                 global_mean, global_std, n_episodes):
+                 esc50_groups, global_mean, global_std, n_episodes):
         self.word_files     = word_files
         self.words          = list(word_files.keys())
         self.indian_groups  = indian_groups
         self.indian_keys    = list(indian_groups.keys())
         self.hey_saya       = hey_saya_files
         self.negatives      = neg_files
+        self.esc50_groups   = esc50_groups          
+        self.esc50_keys     = list(esc50_groups.keys())  
         self.mean           = global_mean
         self.std            = global_std
         self.n_episodes     = n_episodes
 
-        self.can_hey_saya  = len(hey_saya_files) >= (N_SHOT + N_QUERY)
-        if not self.can_hey_saya:
-            print(f"WARNING: Need {N_SHOT+N_QUERY} Hey Saya files, "
-                  f"have {len(hey_saya_files)}.")
-
-        # FIX: previously self.negatives was stored but never read anywhere
-        # in episode construction — your 200+ curated "hard negative" clips
-        # only ever influenced the global mean/std normalization stats, not
-        # the actual training signal. The model was never explicitly taught
-        # "this is noise, don't fire on it." make_hey_saya_episode() below
-        # now spends one class slot on hard negatives whenever there are
-        # enough of them.
+        self.can_hey_saya = len(hey_saya_files) >= (N_SHOT + N_QUERY)
         self.can_negatives = len(neg_files) >= (N_SHOT + N_QUERY)
-        if not self.can_negatives:
-            print(f"WARNING: Need {N_SHOT+N_QUERY} hard negative files, "
-                  f"have {len(neg_files)}. Hey Saya episodes will not "
-                  f"include an explicit negative class until you have more.")
-
         self.can_indian = len(self.indian_keys) >= N_WAY
-        if not self.can_indian:
-            print(f"WARNING: Need {N_WAY} Indian accent word-groups, "
-                  f"have {len(self.indian_keys)}. Indian episodes will be "
-                  f"skipped (falls back to Speech Commands episodes).")
+        self.can_noise = len(self.esc50_keys) >= N_WAY
+
+        # Calculate episode distribution ratios dynamically
+        if self.can_noise:
+            self._hs_ratio     = HEY_SAYA_EPISODE_RATIO
+            self._indian_ratio = HEY_SAYA_EPISODE_RATIO + INDIAN_EPISODE_RATIO
+            self._noise_ratio  = HEY_SAYA_EPISODE_RATIO + INDIAN_EPISODE_RATIO + NOISE_EPISODE_RATIO
+        else:
+            remaining = 1.0 - NOISE_EPISODE_RATIO
+            hs_scaled     = HEY_SAYA_EPISODE_RATIO / remaining
+            indian_scaled = INDIAN_EPISODE_RATIO   / remaining
+            self._hs_ratio     = hs_scaled
+            self._indian_ratio = hs_scaled + indian_scaled
+            self._noise_ratio  = 1.1   
 
     def __len__(self):
         return self.n_episodes
@@ -364,17 +308,12 @@ class EpisodicDataset(Dataset):
             audio = load_audio(path)
             mfcc  = extract_mfcc(audio)
             mfcc  = (mfcc - self.mean) / (self.std + 1e-8)
-            return torch.tensor(mfcc).unsqueeze(0)   # (1, 40, 196)
+            return torch.tensor(mfcc).unsqueeze(0)  
         except Exception:
             return torch.zeros(1, N_MFCC, MAX_FRAMES)
 
     def _episode_from_groups(self, group_lookup, group_keys, n_way):
-        """
-        Shared helper: builds an N-way episode from any dict of
-        {class_key: [file paths]}. Used by both the Indian-accent
-        episode and the Speech-Commands episode since the logic is
-        identical — only the source dict differs.
-        """
+        # Shared helper to generate N-way episodes from grouped data
         episode_keys = random.sample(group_keys, n_way)
         all_support  = []
         all_queries  = []
@@ -397,30 +336,15 @@ class EpisodicDataset(Dataset):
                 torch.tensor(list(all_labels)))
 
     def make_hey_saya_episode(self):
-        """
-        Episode where Hey Saya is class 0.
+        # Episode anchoring the wake word against random speech and negatives
+        chosen         = random.sample(self.hey_saya, N_SHOT + N_QUERY)
+        hs_support     = [self.load_mfcc(f) for f in chosen[:N_SHOT]]
+        hs_query_files = chosen[N_SHOT:]
 
-        FIX: class 1 is now reserved for hard negatives whenever we have
-        enough of them (self.can_negatives). Previously every "other class"
-        slot was filled from Speech Commands words only, so your curated
-        negative recordings never appeared as a training class — the model
-        had no direct signal pushing "Hey Saya" away from your specific
-        negative/ambient-noise recordings, only away from generic words
-        like "yes"/"dog"/"stop". This is the main reason the registered
-        Saya/Noise prototypes in templates.npy ended up only ~0.20 apart
-        in cosine similarity (0.80 similarity) instead of being clearly
-        separated.
-        """
-        # Hey Saya: 10 support + 5 query
-        chosen           = random.sample(self.hey_saya, N_SHOT + N_QUERY)
-        hs_support       = [self.load_mfcc(f) for f in chosen[:N_SHOT]]
-        hs_query_files   = chosen[N_SHOT:]
+        all_support = [torch.stack(hs_support)]
+        all_queries = []
+        all_labels  = []
 
-        all_support  = [torch.stack(hs_support)]
-        all_queries  = []
-        all_labels   = []
-
-        # Hey Saya queries (class 0)
         for f in hs_query_files:
             all_queries.append(self.load_mfcc(f))
             all_labels.append(0)
@@ -428,7 +352,6 @@ class EpisodicDataset(Dataset):
         class_idx      = 1
         remaining_ways = N_WAY - 1
 
-        # Hard-negative class (class 1), when we have enough clips
         if self.can_negatives:
             neg_chosen  = random.sample(self.negatives, N_SHOT + N_QUERY)
             neg_support = [self.load_mfcc(f) for f in neg_chosen[:N_SHOT]]
@@ -439,7 +362,6 @@ class EpisodicDataset(Dataset):
             class_idx      += 1
             remaining_ways -= 1
 
-        # Remaining classes: random Speech Commands words
         other_words = random.sample(self.words, remaining_ways)
         for word in other_words:
             chosen  = random.sample(self.word_files[word], N_SHOT + N_QUERY)
@@ -450,7 +372,6 @@ class EpisodicDataset(Dataset):
                 all_labels.append(class_idx)
             class_idx += 1
 
-        # Shuffle queries
         combined    = list(zip(all_queries, all_labels))
         random.shuffle(combined)
         all_queries, all_labels = zip(*combined)
@@ -460,17 +381,12 @@ class EpisodicDataset(Dataset):
                 torch.tensor(list(all_labels)))
 
     def make_indian_accent_episode(self):
-        """
-        Episode using only Indian accent word-groups (Hindi + Tamil mixed).
-        Each class = one word, support/query drawn from many different
-        speakers/accents saying that same word. Teaches the model that
-        accent variation within the same word should NOT separate the
-        embeddings.
-        """
         return self._episode_from_groups(self.indian_groups, self.indian_keys, N_WAY)
 
+    def make_noise_episode(self):
+        return self._episode_from_groups(self.esc50_groups, self.esc50_keys, N_WAY)
+
     def make_speech_commands_episode(self):
-        """Standard episode using only Speech Commands words."""
         return self._episode_from_groups(self.word_files, self.words, N_WAY)
 
     def __getitem__(self, idx):
@@ -478,21 +394,19 @@ class EpisodicDataset(Dataset):
             raise IndexError
 
         r = random.random()
-
-        if self.can_hey_saya and r < HEY_SAYA_EPISODE_RATIO:
+        if self.can_hey_saya and r < self._hs_ratio:
             return self.make_hey_saya_episode()
-
-        elif self.can_indian and r < (HEY_SAYA_EPISODE_RATIO + INDIAN_EPISODE_RATIO):
+        elif self.can_indian and r < self._indian_ratio:
             return self.make_indian_accent_episode()
-
+        elif self.can_noise and r < self._noise_ratio:
+            return self.make_noise_episode()
         else:
             return self.make_speech_commands_episode()
 
 
-# ══════════════════════════════════════════════════════════════════
-# PROTOTYPICAL LOSS
-# ══════════════════════════════════════════════════════════════════
+# --- PROTOTYPICAL LOSS ---
 def prototypical_loss(model, support, queries, labels):
+    # Calculates distance-based loss for episodic training
     n_way, n_shot = support.shape[0], support.shape[1]
 
     support_flat = support.view(n_way * n_shot, *support.shape[2:]).to(DEVICE)
@@ -507,13 +421,14 @@ def prototypical_loss(model, support, queries, labels):
     return loss, accuracy
 
 
-# ══════════════════════════════════════════════════════════════════
-# VALIDATION
-# ══════════════════════════════════════════════════════════════════
-def validate(model, val_words, val_indian_groups, hey_saya_files, neg_files, mean, std):
+# --- VALIDATION ---
+def validate(model, val_words, val_indian_groups, hey_saya_files,
+             neg_files, esc50_groups, mean, std):
     model.eval()
-    dataset   = EpisodicDataset(val_words, val_indian_groups, hey_saya_files, neg_files,
-                                mean, std, VAL_EPISODES)
+    dataset   = EpisodicDataset(
+        val_words, val_indian_groups, hey_saya_files, neg_files,
+        esc50_groups, mean, std, VAL_EPISODES
+    )
     total_acc = 0.0
     with torch.no_grad():
         for support, queries, labels in dataset:
@@ -523,136 +438,91 @@ def validate(model, val_words, val_indian_groups, hey_saya_files, neg_files, mea
     return total_acc / VAL_EPISODES
 
 
-# ══════════════════════════════════════════════════════════════════
-# MAIN
-# ══════════════════════════════════════════════════════════════════
+# --- MAIN ---
 def main():
     parser = argparse.ArgumentParser(description="Train the wake word embedding model")
-    parser.add_argument("--indian_data", default=None,
-                        help="Path to prepared Indian accent data "
-                             "(output of prepare_commonvoice.py). "
-                             "If omitted, training falls back to "
-                             "Speech Commands + Hey Saya only.")
+    parser.add_argument("--indian_data", default=None)
+    parser.add_argument("--esc50_noise", default=None)
     args = parser.parse_args()
 
-    # ── Step 1: Download Speech Commands ─────────────────────────
+    # Step 1: Download Speech Commands
     download_speech_commands()
 
-    # ── Step 2: Load all datasets ─────────────────────────────────
+    # Step 2: Load all datasets
     print("\nLoading datasets:")
     word_files     = build_word_file_map()
     indian_groups  = build_indian_group_map(args.indian_data)
-    hey_saya_files = load_wav_files(HEY_SAYA_DIR,       "Hey Saya (positive)")
-    neg_files      = load_wav_files(HARD_NEGATIVE_DIR,   "Hard negatives")
+    hey_saya_files = load_wav_files(HEY_SAYA_DIR,     "Hey Saya (positive)")
+    neg_files      = load_wav_files(HARD_NEGATIVE_DIR, "Hard negatives")
+    esc50_groups   = build_esc50_group_map(args.esc50_noise)   
 
-    print(f"\nDataset summary:")
-    print(f"  Speech Commands words : {len(word_files)}")
-    print(f"  Indian accent groups  : {len(indian_groups)}")
-    print(f"  Hey Saya samples      : {len(hey_saya_files)}")
-    print(f"  Hard negative samples : {len(neg_files)}")
-    print(f"  Episode mix           : {HEY_SAYA_EPISODE_RATIO:.0%} Hey Saya / "
-          f"{INDIAN_EPISODE_RATIO:.0%} Indian accent / "
-          f"{1 - HEY_SAYA_EPISODE_RATIO - INDIAN_EPISODE_RATIO:.0%} Speech Commands")
-
-    if not indian_groups:
-        print(f"\n  ⚠️  No Indian accent data loaded — training will proceed with")
-        print(f"     Speech Commands + Hey Saya only. Pass --indian_data to add it:")
-        print(f"     python3 train_embedding.py --indian_data ./indian_accent_data")
-
-    # Check minimum requirements
+    # Check Requirements
     if len(word_files) < N_WAY:
         print(f"\nERROR: Need {N_WAY} Speech Commands words. Check {SPEECH_COMMANDS_DIR}")
         return
 
     if len(hey_saya_files) < N_SHOT + N_QUERY:
         print(f"\nERROR: Need at least {N_SHOT + N_QUERY} Hey Saya samples.")
-        print(f"  Run augment_wake_word.py first to create 300 samples.")
         return
 
-    # ── Step 3: Compute normalization stats ───────────────────────
-    mean, std = compute_global_stats(word_files, indian_groups, hey_saya_files, neg_files)
+    # Step 3: Compute normalization stats
+    mean, std = compute_global_stats(
+        word_files, indian_groups, hey_saya_files, neg_files, esc50_groups
+    )
 
-    # ── Step 4: Split Speech Commands into train/val ──────────────
+    # Step 4: Split datasets into train/val
+    
+    # Split Speech Commands
     all_words = list(word_files.keys())
     random.shuffle(all_words)
     split       = int(len(all_words) * 0.8)
     train_words = {w: word_files[w] for w in all_words[:split]}
     val_words   = {w: word_files[w] for w in all_words[split:]}
 
-    print(f"\nTrain words ({len(train_words)}): {list(train_words.keys())}")
-    print(f"Val words   ({len(val_words)}):   {list(val_words.keys())}")
-
-    # ── Step 4b: Split Indian accent groups into train/val ─────────
+    # Split Indian Accents
     train_indian_groups = {}
     val_indian_groups   = {}
     if indian_groups:
         indian_keys = list(indian_groups.keys())
         random.shuffle(indian_keys)
-        i_split              = int(len(indian_keys) * 0.8)
-        train_indian_groups  = {k: indian_groups[k] for k in indian_keys[:i_split]}
-        val_indian_groups    = {k: indian_groups[k] for k in indian_keys[i_split:]}
+        i_split             = int(len(indian_keys) * 0.8)
+        train_indian_groups = {k: indian_groups[k] for k in indian_keys[:i_split]}
+        val_indian_groups   = {k: indian_groups[k] for k in indian_keys[i_split:]}
+    
+    # Share ESC-50 across train and val
+    train_esc50_groups = esc50_groups
+    val_esc50_groups   = esc50_groups
 
-        print(f"Train Indian groups ({len(train_indian_groups)})")
-        print(f"Val Indian groups   ({len(val_indian_groups)})")
+    # Split Wake Word Samples
+    train_hey_saya = glob.glob("dataset/train/positive/*.wav")
+    val_hey_saya   = glob.glob("dataset/val/positive/*.wav")
 
-        if len(val_indian_groups) < N_WAY:
-            print(f"  ⚠️  Val Indian groups below N_WAY={N_WAY} — "
-                  f"validation will fall back to Speech Commands episodes only.")
-
-    # ── Step 4c: Split Hey Saya and hard-negative samples into train/val ──
-    # FIX: previously hey_saya_files/neg_files were passed unsplit to BOTH
-    # the training dataset and validate() — meaning validation accuracy on
-    # Hey-Saya-type episodes was measured partly on samples the model had
-    # already trained on. Speech Commands and Indian groups were already
-    # split correctly; this brings Hey Saya / negatives in line with them.
-    hey_saya_shuffled = list(hey_saya_files)
-    random.shuffle(hey_saya_shuffled)
-    hs_split       = int(len(hey_saya_shuffled) * 0.8)
-    train_hey_saya = hey_saya_shuffled[:hs_split]
-    val_hey_saya   = hey_saya_shuffled[hs_split:]
-
+    # Split Negatives
     neg_shuffled = list(neg_files)
     random.shuffle(neg_shuffled)
     neg_split  = int(len(neg_shuffled) * 0.8)
     train_neg  = neg_shuffled[:neg_split]
     val_neg    = neg_shuffled[neg_split:]
 
-    print(f"\nTrain Hey Saya ({len(train_hey_saya)}) / Val Hey Saya ({len(val_hey_saya)})")
-    print(f"Train negatives ({len(train_neg)}) / Val negatives ({len(val_neg)})")
-
-    if len(val_hey_saya) < N_SHOT + N_QUERY:
-        print(f"  ⚠️  Val Hey Saya below {N_SHOT + N_QUERY} clips — record more, "
-              f"or validation accuracy on Hey Saya episodes will be unreliable.")
-    if len(val_neg) < N_SHOT + N_QUERY:
-        print(f"  ⚠️  Val negatives below {N_SHOT + N_QUERY} clips — record more "
-              f"hard negatives, or this class will be skipped in validation episodes.")
-
+    # Step 5: Build Training Dataset
     train_dataset = EpisodicDataset(
         train_words, train_indian_groups, train_hey_saya, train_neg,
-        mean, std, EPISODES_PER_EPOCH
+        train_esc50_groups, mean, std, EPISODES_PER_EPOCH
     )
 
-    # ── Step 5: Model + optimizer ─────────────────────────────────
+    # Step 6: Model & Optimizer Configuration
     model     = WakeWordEmbedder(embedding_dim=EMBEDDING_DIM).to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=LR)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='max', factor=0.5, patience=5
     )
 
-    print(f"\n{'='*60}")
-    print(f"  Training — {N_WAY}-way {N_SHOT}-shot episodic")
-    print(f"  {HEY_SAYA_EPISODE_RATIO:.0%} Hey Saya / "
-          f"{INDIAN_EPISODE_RATIO:.0%} Indian accent / "
-          f"{1 - HEY_SAYA_EPISODE_RATIO - INDIAN_EPISODE_RATIO:.0%} Speech Commands")
-    print(f"  Target: Val Acc > 80%")
-    print(f"{'='*60}\n")
-
     best_val_acc     = 0.0
     patience_counter = 0
 
+    # Training Loop
     for epoch in range(1, EPOCHS + 1):
 
-        # Train
         model.train()
         epoch_loss = epoch_acc = 0.0
 
@@ -669,16 +539,14 @@ def main():
         epoch_loss /= EPISODES_PER_EPOCH
         epoch_acc  /= EPISODES_PER_EPOCH
 
-        # Validate
-        val_acc = validate(model, val_words, val_indian_groups, val_hey_saya, val_neg, mean, std)
+        val_acc = validate(
+            model, val_words, val_indian_groups,
+            val_hey_saya, val_neg, val_esc50_groups, mean, std
+        )
         scheduler.step(val_acc)
 
-        print(f"Epoch {epoch:03d} | "
-              f"Loss: {epoch_loss:.4f} | "
-              f"Train: {epoch_acc:.1%} | "
-              f"Val: {val_acc:.1%}")
+        print(f"Epoch {epoch:03d} | Loss: {epoch_loss:.4f} | Train: {epoch_acc:.1%} | Val: {val_acc:.1%}")
 
-        # Save best
         if val_acc > best_val_acc:
             best_val_acc     = val_acc
             patience_counter = 0
@@ -689,18 +557,16 @@ def main():
                 "global_std":  std,
                 "val_acc":     val_acc,
             }, MODEL_SAVE)
-            print(f"  ✅ Best model saved (val={val_acc:.1%})")
         else:
             patience_counter += 1
             if patience_counter >= PATIENCE:
                 print(f"\nEarly stopping at epoch {epoch}.")
                 break
 
-    # ── Done ──────────────────────────────────────────────────────
     print(f"\n{'='*60}")
     print(f"  Training complete!")
     print(f"  Best val accuracy: {best_val_acc:.1%}")
-
+ 
     if best_val_acc < 0.65:
         print(f"\n  ⚠️  Below 65% — open this file and change:")
         print(f"     EPOCHS   = 120")
@@ -710,13 +576,14 @@ def main():
         print(f"\n  ✅  Good — test on Raspberry Pi.")
     else:
         print(f"\n  ✅  Excellent — model is ready.")
-
+ 
     print(f"\n  Next steps:")
     print(f"  1. Open {STATS_FILE}")
     print(f"     Copy GLOBAL_MEAN and GLOBAL_STD into:")
     print(f"     - register_wake_word.py")
     print(f"     - wake_word_detector.cpp")
     print(f"  2. python3 register_wake_word.py")
+    print(f"     Check: Saya <-> Noise similarity should now be < 0.35")
     print(f"  3. python3 quantize_exporter.py")
     print(f"  4. Copy weights_embedding.h + templates.npy to Pi")
     print(f"  5. Recompile and test")
@@ -724,6 +591,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-#   GLOBAL_MEAN = -1.94761944
-#   GLOBAL_STD  = 12.18327618

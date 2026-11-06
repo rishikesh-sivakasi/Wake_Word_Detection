@@ -15,11 +15,11 @@ def record_audio(filename):
     print(f"\n🎤 Get ready... Recording {DURATION} seconds for '{filename}'")
     print("🔴 RECORDING...")
     
-    # Capture the audio as a float32 numpy array
+    # Capture the audio as a int16 numpy array
     audio_data = sd.rec(int(DURATION * SAMPLE_RATE), 
                         samplerate=SAMPLE_RATE, 
                         channels=CHANNELS, 
-                        dtype=np.float32)
+                        dtype=np.int16)
     
     # Wait until the recording is finished
     sd.wait()  

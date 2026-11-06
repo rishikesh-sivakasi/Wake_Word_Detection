@@ -26,3 +26,4 @@ svarah_qa_flagged.txt
 python_training_&_feature_extraction/preprocessing_scripts/remove.py
 python_training_&_feature_extraction/preprocessing_scripts/move.py
 
+.gitignore
