@@ -164,8 +164,6 @@ Input: (Batch, 1, 40, 196)
 
 ```
 .
-├── templates.npy                                # Default prototype bank: Row 0=Saya, Row 1=Noise
-├── weights_embedding.h                          # INT8 quantized weights header for C++
 ├── cpp_inference/                               # Real-time C++ inference engine
 │   ├── wake_word_detector.cpp                   # Main edge executable (ALSA audio stream + sliding window)
 │   ├── cnn_inference.cpp / cnn_inference.h      # INT8 CNN forward pass & dual-gate matcher
