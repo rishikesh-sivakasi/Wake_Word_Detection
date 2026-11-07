@@ -163,6 +163,7 @@ my_custom_model_sophia/
 
 # Ignore large datasets and acoustic augmentation archives
 data/
+docs/models/
 background_noise/
 mit_rirs/
 mit_rirs.zip
@@ -173,6 +174,7 @@ my_custom_model_*/hey_*/
 
 # Ignore pre-trained models cache (downloaded on demand via openwakeword.utils)
 openwakeword/resources/
+tests/
 
 
 piper-sample-generator/
