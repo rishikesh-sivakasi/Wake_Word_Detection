@@ -1,0 +1,233 @@
+# # Target phrase configuration
+# model_name: "hey_saya"
+# target_phrase:
+#   - "hey saya"
+
+# # Adversarial/negative phrases to suppress false positives
+# custom_negative_phrases:
+#   - "hey sarah"
+#   - "hey siri"
+#   - "hey simon"
+#   - "hey sonia"
+#   - "hey sam"
+#   - "saya"
+#   - "say that"
+#   - "hey"
+#   - "hey there"
+#   - "hey you"
+#   - "okay"
+#   - "hi there"
+#   - "hello"
+#   - "science"
+#   - "silence"
+#   - "maya"
+#   - "play some"
+#   - "hey saw"
+#   - "hey maya"
+#   - "hey shriya"
+#   - "hey sreya"
+
+# # Pipeline dependencies and acoustic impulse responses
+# piper_sample_generator_path: "/home/arz-1029/openWakeWord/piper-sample-generator"
+# rir_paths:
+#   - "/home/arz-1029/openWakeWord/mit_rirs"
+# background_paths:
+#   - "/home/arz-1029/openWakeWord/background_noise"
+# background_paths_duplication_rate:
+#   - 1
+
+# # Generation settings
+# n_samples: 5000
+# n_samples_val: 1000
+# tts_batch_size: 16
+# max_negative_weight: 1.0
+# clip_duration: 3.0
+# total_phases: 1
+# augmentation_rounds: 1
+
+# # Target output directory
+# output_dir: "/home/arz-1029/openWakeWord/my_custom_model"
+
+# # Negative background features
+# feature_data_files:
+#   "ACAV100M": "/home/arz-1029/openWakeWord/data/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+# false_positive_validation_data_path: "/home/arz-1029/openWakeWord/data/validation_set_features.npy"
+
+# # Model architecture & training hyperparameters
+# model_type: "dnn"
+# layer_size: 128
+# n_layers: 2
+# steps: 10000
+# batch_n_per_class:
+#   "ACAV100M": 1024
+#   "adversarial_negative": 50
+#   "positive": 50
+# lr: 0.001
+# false_activation_penalty: 1500
+# target_false_positives_per_hour: 0.2
+# weight_decay: 0.00001
+# augmentation_batch_size: 16
+
+# Target phrase configuration with syllabic/phonetic variations
+# model_name: "hey_saya"
+# target_phrase:
+#   - "hey saya"
+#   - "hey sai-ya"
+#   - "hey sigh-ya"
+#   - "hey sah-ya"
+#   - "hey saa-ya"
+#   - "hay saya"
+
+# # Adversarial & near-miss phrases to force phoneme contrast
+# custom_negative_phrases:
+  # - "hey sarah"
+  # - "hey siri"
+  # - "hey simon"
+  # - "hey sonia"
+  # - "hey sam"
+  # - "saya"
+  # - "sai-ya"
+  # - "say that"
+  # - "hey"
+  # - "hey there"
+  # - "hey you"
+  # - "okay"
+  # - "hi there"
+  # - "hello"
+  # - "science"
+  # - "silence"
+  # - "maya"
+  # - "sigh"
+  # - "play some"
+  # - "hey saw"
+  # - "hey maya"
+  # - "hey shriya"
+  # - "hey sreya"
+
+# # Pipeline dependencies
+# piper_sample_generator_path: "/home/arz-1029/openWakeWord/piper-sample-generator"
+# rir_paths:
+#   - "/home/arz-1029/openWakeWord/mit_rirs"
+# background_paths:
+#   - "/home/arz-1029/openWakeWord/background_noise"
+# background_paths_duplication_rate:
+#   - 1
+
+# # Production-scale generation
+# n_samples: 50000
+# n_samples_val: 5000
+# tts_batch_size: 32
+# augmentation_batch_size: 16
+# max_negative_weight: 1.5
+# clip_duration: 3.0
+# total_phases: 1
+# augmentation_rounds: 1
+
+# output_dir: "/home/arz-1029/openWakeWord/my_custom_model"
+
+# # Pre-computed negative background features
+# feature_data_files:
+#   "ACAV100M": "/home/arz-1029/openWakeWord/data/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+# false_positive_validation_data_path: "/home/arz-1029/openWakeWord/data/validation_set_features.npy"
+
+# # Model architecture & extended training steps
+# model_type: "dnn"
+# layer_size: 128
+# n_layers: 2
+# steps: 25000
+# batch_n_per_class:
+#   "ACAV100M": 1024
+#   "adversarial_negative": 50
+#   "positive": 50
+# lr: 0.001
+# false_activation_penalty: 3500
+# target_false_positives_per_hour: 0.05
+# weight_decay: 0.00001
+
+# Target phrase configuration with phoneme variations
+model_name: "hey_saya"
+target_phrase:
+  - "hey saya"
+  - "hey sigh ya"
+  - "hey sah ya"
+  - "hey saa yaa"
+
+# Adversarial words to teach the model NOT to trigger on similar speech
+custom_negative_phrases:
+  - "hey sarah"
+  - "hey siri"
+  - "hey simon"
+  - "hey saa"
+  - "hey sam"
+  - "saya"
+  - "sai-ya"
+  - "hey"
+  - "hey there"
+  - "hey you"
+  - "okay"
+  - "hi there"
+  - "hello"
+  - "science"
+  - "silence"
+  - "maya"
+  - "sigh"
+  - "play some"
+  - "hey saw"
+  - "hey maya"
+  - "hey shriya"
+  - "hey sreya"
+  - "they say"
+  - "say that"
+  - "say it"
+  - "hey there"
+  - "hey you"
+  - "how are you"
+  - "okay"
+  - "so yeah"
+  - "yeah"
+  - "yes"
+  - "what did you say"
+  - "tell me"
+  - "right now"
+
+# Synthesis & Augmentation setup
+piper_sample_generator_path: "/home/arz-1029/openWakeWord/piper-sample-generator"
+rir_paths:
+  - "/home/arz-1029/openWakeWord/mit_rirs"
+background_paths:
+  - "/home/arz-1029/openWakeWord/background_noise"
+background_paths_duplication_rate:
+  - 1
+
+# Dataset size
+n_samples: 25000
+n_samples_val: 3000
+tts_batch_size: 32
+augmentation_batch_size: 16
+clip_duration: 3.0
+total_phases: 1
+augmentation_rounds: 2    # Multiplies room impulse variations
+max_negative_weight: 1500
+
+output_dir: "/home/arz-1029/openWakeWord/my_custom_model"
+
+feature_data_files:
+  "ACAV100M": "/home/arz-1029/openWakeWord/data/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+false_positive_validation_data_path: "/home/arz-1029/openWakeWord/data/validation_set_features.npy"
+
+# Network architecture: 3 layers (matching the Jarvis layer structure)
+model_type: "dnn"
+layer_size: 64
+n_layers: 3
+steps: 25000
+
+# Equalize adversarial sampling to punish near-misses
+batch_n_per_class:
+  "ACAV100M": 1024
+  "adversarial_negative": 150
+  "positive": 50
+
+lr: 0.001
+false_activation_penalty: 8000          # Heavily suppresses noise/static triggers
+target_false_positives_per_hour: 0.0   # Enforces low false-alarm threshold
+weight_decay: 0.00001
